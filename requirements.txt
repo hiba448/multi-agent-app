@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+streamlit
+langchain
+langchain-community
+langgraph
+langchain-ollama
+sqlalchemy
+alembic
+psycopg2-binary
+pgvector
+pymupdf
+python-pptx
+python-dotenv
+duckduckgo-search
+httpx
+ddgs
