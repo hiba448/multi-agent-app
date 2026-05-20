@@ -64,6 +64,25 @@ with the web results. Clearly indicate which parts come from the web.
 ANSWER:
 <your complete answer here>
 """)
+OFF_TOPIC_PROMPT = ChatPromptTemplate.from_template("""
+You are a strict relevance checker for an academic lecture companion.
+
+A student has uploaded a lecture document and is asking a question.
+Your job is to determine whether the question is related to the 
+academic content of the provided lecture excerpts.
+
+LECTURE EXCERPTS:
+{context}
+
+STUDENT QUESTION:
+{question}
+
+Is this question related to the lecture content?
+Answer with exactly one word: YES or NO.
+""")
+
+
+
 
 
 def parse_research_response(response_text: str) -> Dict:
@@ -97,6 +116,16 @@ def parse_research_response(response_text: str) -> Dict:
     result["answer"] = result["answer"].strip()
     return result
 
+def is_question_on_topic(question: str, context: str) -> bool:
+    """Check whether the student question is related to the lecture content."""
+    prompt = OFF_TOPIC_PROMPT.format_messages(
+        context=context,
+        question=question
+    )
+    response = llm.invoke(prompt)
+    answer = response.content.strip().upper()
+    return "YES" in answer
+
 
 DISTANCE_THRESHOLD = 0.5  # below this = lecture content is sufficient
 
@@ -117,7 +146,8 @@ def run_research_agent(
             "agent": "research",
             "answer": "No relevant content was found in the uploaded lecture.",
             "sources": [],
-            "web_enriched": False
+            "web_enriched": False,
+            "off_topic": False
         }
 
     context = "\n\n".join([
@@ -125,6 +155,22 @@ def run_research_agent(
         for chunk in chunks
     ])
 
+    # off-topic check before doing anything else
+    if not is_question_on_topic(question, context):
+        return {
+            "agent": "research",
+            "answer": (
+                "Your question does not appear to be related to the lecture you uploaded. "
+                "This assistant is focused exclusively on the content of your current document. "
+                "If you would like to discuss a different topic, please start a new session "
+                "and upload a relevant document."
+            ),
+            "sources": [],
+            "web_enriched": False,
+            "off_topic": True
+        }
+
+    # continue with normal flow
     prompt = RESEARCH_PROMPT.format_messages(
         context=context,
         question=question
@@ -132,7 +178,6 @@ def run_research_agent(
     response = llm.invoke(prompt)
     parsed = parse_research_response(response.content)
 
-    # Decision based on distance, not LLM self-assessment
     best_distance = chunks[0]["distance"]
     web_enriched = False
 
@@ -156,5 +201,6 @@ def run_research_agent(
         "sources": parsed["sources"],
         "web_enriched": web_enriched,
         "best_chunk_distance": best_distance,
-        "chunks_used": len(chunks)
+        "chunks_used": len(chunks),
+        "off_topic": False
     }

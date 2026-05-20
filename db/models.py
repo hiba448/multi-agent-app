@@ -32,6 +32,7 @@ class Session(Base):
 
     id = Column(Integer, primary_key=True)
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
     student = relationship("Student", back_populates="sessions")

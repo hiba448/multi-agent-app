@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session as DBSession
 from db.models import engine
 from db.vector_store import store_document, store_chunks
 from parsing.document_parser import parse_document
+from db.models import engine, Session as SessionModel
 
 router = APIRouter()
 
@@ -16,9 +17,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 @router.post("/")
 async def upload_file(
     file: UploadFile = File(...),
-    student_id: int = Form(...)
+    student_id: int = Form(...),
+    session_id: int = Form(...)
 ):
-    # validate file type
     extension = os.path.splitext(file.filename)[1].lower()
     if extension not in [".pdf", ".pptx", ".ppt"]:
         raise HTTPException(
@@ -26,13 +27,11 @@ async def upload_file(
             detail="Unsupported file type. Please upload a PDF or PPTX file."
         )
 
-    # save file to disk
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        # parse into chunks
         chunks = parse_document(file_path)
 
         if not chunks:
@@ -41,14 +40,21 @@ async def upload_file(
                 detail="No text could be extracted from the uploaded file."
             )
 
-        # store document record
         document_id = store_document(
             filename=file.filename,
             student_id=student_id
         )
 
-        # embed and store chunks
         stored = store_chunks(chunks, document_id=document_id)
+
+        # link document to session
+        with DBSession(engine) as session:
+            s = session.query(SessionModel).filter(
+                SessionModel.id == session_id
+            ).first()
+            if s:
+                s.document_id = document_id
+                session.commit()
 
         return {
             "message": "File uploaded and processed successfully.",

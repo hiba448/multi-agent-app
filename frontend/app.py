@@ -30,20 +30,32 @@ if "quiz_index" not in st.session_state:
 
 # --- Helper functions ---
 
-def create_session(student_name: str):
+def lookup_or_create_student(student_name: str):
+    """
+    FIX #2: Look up an existing student by name without creating a new session.
+    Falls back to POST /session/ only to get/create the student record,
+    then immediately returns — we do NOT treat the returned session_id as active.
+    We use GET /session/student/{id} to let the user pick their session.
+    """
     response = httpx.post(
         API_URL + "/session/",
         json={"student_name": student_name},
         timeout=10.0
     )
-    return response.json()
+    return response.json()  # returns student_id, session_id, student_name
 
 
-def upload_document(file, student_id: int):
+def upload_document(file, student_id: int, session_id: int):
+    """
+    FIX #1: Pass session_id as required by the backend upload endpoint.
+    """
     response = httpx.post(
         API_URL + "/upload/",
         files={"file": (file.name, file.getvalue(), file.type)},
-        data={"student_id": str(student_id)},
+        data={
+            "student_id": str(student_id),
+            "session_id": str(session_id),   # <-- was missing before
+        },
         timeout=60.0
     )
     return response.json()
@@ -89,6 +101,39 @@ def add_message(role: str, content: str, agent_label: str = None):
     })
 
 
+def get_student_sessions(student_id: int):
+    response = httpx.get(
+        API_URL + "/session/student/" + str(student_id),
+        timeout=10.0
+    )
+    return response.json()
+
+
+def create_new_session(student_id: int):
+    response = httpx.post(
+        API_URL + "/session/student/" + str(student_id) + "/new",
+        timeout=10.0
+    )
+    return response.json()
+
+
+def load_session_history(session_id: int):
+    response = httpx.get(
+        API_URL + "/session/" + str(session_id) + "/history",
+        timeout=10.0
+    )
+    return response.json()
+
+
+def delete_session(session_id: int):
+    """FIX #4: Delete a session via the backend."""
+    response = httpx.delete(
+        API_URL + "/session/" + str(session_id),
+        timeout=10.0
+    )
+    return response.status_code == 200
+
+
 # --- Login Page ---
 
 def render_login():
@@ -97,16 +142,89 @@ def render_login():
     st.divider()
 
     with st.form("login_form"):
-        name = st.text_input("Enter your name to get started")
-        submitted = st.form_submit_button("Start Session")
+        name = st.text_input("Enter your name")
+        submitted = st.form_submit_button("Continue")
 
         if submitted and name.strip():
-            with st.spinner("Creating your session..."):
-                data = create_session(name.strip())
+            with st.spinner("Loading..."):
+                # FIX #2: We call the endpoint to find/create the student record,
+                # but we do NOT activate the session_id it returns. The user will
+                # pick (or create) a session on the next screen.
+                data = lookup_or_create_student(name.strip())
                 st.session_state.student_id = data["student_id"]
-                st.session_state.session_id = data["session_id"]
                 st.session_state.student_name = data["student_name"]
+                # Deliberately do NOT set st.session_state.session_id here.
+                # That auto-created session will appear in the selector as
+                # "Empty session" and the user can choose to use or ignore it.
             st.rerun()
+
+
+# --- Session Selector Page ---
+
+def render_session_selector():
+    st.title("📚 Welcome back, " + st.session_state.student_name)
+    st.divider()
+
+    data = get_student_sessions(st.session_state.student_id)
+    sessions = data.get("sessions", [])
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.subheader("Your previous sessions")
+
+        if sessions:
+            for s in sessions:
+                label = s["created_at"][:16] + " — " + s["preview"]
+                btn_col, del_col = st.columns([5, 1])
+
+                with btn_col:
+                    if st.button(label, key="session_" + str(s["session_id"])):
+                        # FIX #3: Load session and its message history
+                        st.session_state.session_id = s["session_id"]
+                        history = load_session_history(s["session_id"])
+                        st.session_state.messages = [
+                            {
+                                "role": m["role"],
+                                "content": m["content"],
+                                "agent_label": m.get("agent_label")
+                            }
+                            for m in history
+                        ]
+                        # Restore the document linked to this session
+                        doc_response = httpx.get(
+                            API_URL + "/session/" + str(s["session_id"]) + "/document",
+                            timeout=10.0
+                        )
+                        doc_data = doc_response.json()
+                        st.session_state.document_id = doc_data.get("document_id")
+                        st.rerun()
+
+                # FIX #4: Delete button per session
+                with del_col:
+                    if st.button("🗑️", key="delete_" + str(s["session_id"]),
+                                 help="Delete this session"):
+                        if delete_session(s["session_id"]):
+                            st.success("Session deleted.")
+                        else:
+                            st.error("Could not delete session.")
+                        st.rerun()
+        else:
+            st.info("No previous sessions found.")
+
+    with col2:
+        st.subheader("Start fresh")
+        if st.button("New Session", use_container_width=True):
+            result = create_new_session(st.session_state.student_id)
+            st.session_state.session_id = result["session_id"]
+            st.session_state.document_id = None
+            st.session_state.messages = []
+            st.session_state.current_quiz = None
+            st.rerun()
+
+    if st.button("Not you? Logout"):
+        st.session_state.clear()
+        st.rerun()
 
 
 # --- Upload Page ---
@@ -123,9 +241,11 @@ def render_upload():
     if uploaded_file:
         if st.button("Process Document"):
             with st.spinner("Parsing and indexing your lecture... this may take a moment."):
+                # FIX #1: Pass session_id so the backend can link the document
                 result = upload_document(
                     uploaded_file,
-                    st.session_state.student_id
+                    st.session_state.student_id,
+                    st.session_state.session_id,
                 )
 
                 if "document_id" in result:
@@ -136,7 +256,7 @@ def render_upload():
                     )
                     st.rerun()
                 else:
-                    st.error("Upload failed: " + str(result.get("detail", "Unknown error")))
+                    st.error("Upload failed: " + str(result.get("detail", result)))
 
 
 # --- Chat Page ---
@@ -144,7 +264,6 @@ def render_upload():
 def render_chat():
     st.header("Chat with your lecture")
 
-    # display message history
     for msg in st.session_state.messages:
         if msg["role"] == "user":
             with st.chat_message("user"):
@@ -155,7 +274,6 @@ def render_chat():
                 st.caption("🤖 " + (label.capitalize() + " Agent" if label else "Agent"))
                 st.write(msg["content"])
 
-    # chat input
     user_input = st.chat_input("Ask a question, request a summary, or ask for a quiz...")
 
     if user_input:
@@ -186,7 +304,11 @@ def render_chat():
             else:
                 st.write(str(result))
 
-            add_message("agent", str(result.get("summary") or result.get("answer") or result.get("explanation") or ""), agent)
+            add_message(
+                "agent",
+                str(result.get("summary") or result.get("answer") or result.get("explanation") or ""),
+                agent
+            )
 
 
 def render_summary_result(result: dict):
@@ -342,23 +464,32 @@ def render_progress():
 # --- Main App ---
 
 def main():
-    # not logged in
     if not st.session_state.student_id:
         render_login()
         return
 
-    # logged in but no document
+    if not st.session_state.session_id:
+        render_session_selector()
+        return
+
     if not st.session_state.document_id:
         st.sidebar.write("👤 " + st.session_state.student_name)
+        if st.sidebar.button("Back to sessions"):
+            st.session_state.session_id = None
+            st.session_state.messages = []
+            st.rerun()
         if st.sidebar.button("Logout"):
             st.session_state.clear()
             st.rerun()
         render_upload()
         return
 
-    # fully ready
     st.sidebar.write("👤 " + st.session_state.student_name)
     st.sidebar.write("📄 Document loaded")
+    if st.sidebar.button("Back to sessions"):
+        st.session_state.session_id = None
+        st.session_state.messages = []
+        st.rerun()
     if st.sidebar.button("Upload new document"):
         st.session_state.document_id = None
         st.session_state.messages = []
