@@ -1,9 +1,9 @@
 import os
 import httpx
-from typing import List, Dict
+from typing import List, Dict, Optional
+
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from pgvector.sqlalchemy import Vector
 from dotenv import load_dotenv
 
 from db.models import engine, DocumentChunk, Document
@@ -14,18 +14,18 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL")
 
+
 def get_embedding(text: str):
     response = httpx.post(
         f"{OLLAMA_BASE_URL}/api/embed",
         json={
-            "model": "nomic-embed-text",
+            "model": OLLAMA_EMBED_MODEL or "nomic-embed-text",
             "input": text
         },
         timeout=30.0
     )
 
     response.raise_for_status()
-
     data = response.json()
 
     return data["embeddings"][0]
@@ -36,12 +36,14 @@ def store_chunks(
     document_id: int
 ) -> int:
     """
-    Generate embeddings for each chunk and store
-    them in the document_chunks table.
+    Generate embeddings for each chunk and store them
+    in the document_chunks table.
+
     Returns the number of chunks stored.
     """
     with Session(engine) as session:
         stored = 0
+
         for chunk in chunks:
             embedding = get_embedding(chunk["content"])
 
@@ -51,6 +53,7 @@ def store_chunks(
                 embedding=embedding,
                 page_number=chunk["page"]
             )
+
             session.add(db_chunk)
             stored += 1
 
@@ -66,7 +69,8 @@ def retrieve_similar_chunks(
     """
     Retrieve the top_k most semantically similar chunks
     to the query from a specific document.
-    Uses cosine distance via pgvector's <=> operator.
+
+    Uses cosine distance via pgvector.
     """
     query_embedding = get_embedding(query)
 
@@ -92,17 +96,29 @@ def retrieve_similar_chunks(
     ]
 
 
-def store_document(filename: str, student_id: int) -> int:
+def store_document(
+    filename: str,
+    student_id: int,
+    subject_id: Optional[int] = None
+) -> int:
     """
     Create a document record in the database.
-    Returns the new document's id.
+
+    The document belongs to:
+    - a student
+    - optionally a subject
+
+    Returns the new document id.
     """
     with Session(engine) as session:
         document = Document(
             filename=filename,
-            student_id=student_id
+            student_id=student_id,
+            subject_id=subject_id
         )
+
         session.add(document)
         session.commit()
         session.refresh(document)
+
         return document.id

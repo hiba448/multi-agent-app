@@ -1,10 +1,10 @@
 import os
-from typing import Dict, List, Optional
+import re
+from typing import Dict, Optional
+
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
-from langgraph.graph import StateGraph, END
-from typing import TypedDict
 
 from backend.agents.scribe import run_scribe_agent
 from backend.agents.research import run_research_agent
@@ -23,8 +23,12 @@ llm = ChatOllama(
     temperature=0.0
 )
 
+
+# -------------------------------------------------------------------
+# Intent classification
+# -------------------------------------------------------------------
 INTENT_PROMPT = ChatPromptTemplate.from_template("""
-You are the Orchestrator Agent. Your only job is to classify the student's 
+You are the Orchestrator Agent. Your only job is to classify the student's
 request into exactly one of the following intents:
 
 - SUMMARIZE : the student wants a summary or overview of the lecture
@@ -40,176 +44,285 @@ Respond with exactly one word from the list above. Nothing else.
 """)
 
 
-# LangGraph state definition
-class AgentState(TypedDict):
-    request: str
-    intent: str
-    document_id: int
-    student_id: int
-    extra: Dict        # carries evaluate-specific fields
-    result: Dict       # final output
+VALID_INTENTS = {
+    "SUMMARIZE",
+    "QUESTION",
+    "QUIZ",
+    "EVALUATE",
+    "EXPLAIN"
+}
 
 
-# --- Node functions ---
+def classify_intent(request: str, extra: Optional[Dict] = None) -> str:
+    """
+    Classify student request into an intent.
+    Automatically forces EVALUATE if quiz answer fields exist.
+    """
+    extra = extra or {}
 
-def classify_intent(state: AgentState) -> AgentState:
-    """Classify the student request into one of the defined intents."""
-    prompt = INTENT_PROMPT.format_messages(request=state["request"])
+    if (
+        extra.get("question") and
+        extra.get("correct_answer") and
+        extra.get("student_answer")
+    ):
+        return "EVALUATE"
+
+    prompt = INTENT_PROMPT.format_messages(request=request)
     response = llm.invoke(prompt)
+
     intent = response.content.strip().upper()
 
-    valid_intents = {"SUMMARIZE", "QUESTION", "QUIZ", "EVALUATE", "EXPLAIN"}
-    if intent not in valid_intents:
-        intent = "QUESTION"  # safe fallback
+    if intent not in VALID_INTENTS:
+        return "QUESTION"
 
-    state["intent"] = intent
-    return state
+    return intent
 
 
-def route(state: AgentState) -> str:
-    """Route to the correct agent node based on classified intent."""
-    return state["intent"]
+# -------------------------------------------------------------------
+# Quiz planning
+# -------------------------------------------------------------------
+QUIZ_PLANNER_PROMPT = ChatPromptTemplate.from_template("""
+You are a quiz planning assistant for a local academic tutoring app.
+
+Analyze the student's quiz request and decide:
+1. quiz_focus: the topic or scope of the quiz
+2. quiz_style: quick, standard, long, full_coverage, weak_topics, exam_preparation
+3. num_questions: suitable number of questions
+4. retrieval_query: the best query to retrieve relevant course chunks
+
+Rules:
+- If the user asks for "quick", use 3 questions.
+- If the user asks for "short", use 3 to 5 questions.
+- If the user asks for a standard quiz, use 5 questions.
+- If the user asks for "all key points", "full coverage", "complete revision", use 10 to 12 questions.
+- If the user asks for exam preparation, use 8 to 10 questions.
+- If the user explicitly asks for a number, respect it, but keep it between 3 and 15.
+- If the user asks about weak topics, set quiz_style to weak_topics.
+- The quiz must stay based on the uploaded course material.
+
+STUDENT REQUEST:
+{request}
+
+Return valid JSON only with this exact structure:
+{{
+  "quiz_focus": "string",
+  "quiz_style": "string",
+  "num_questions": 5,
+  "retrieval_query": "string"
+}}
+""")
 
 
-def run_scribe(state: AgentState) -> AgentState:
-    """Fetch chunks and run the Scribe Agent."""
-    chunks = retrieve_similar_chunks(
-        query="lecture summary overview",
-        document_id=state["document_id"],
-        top_k=10
-    )
-    state["result"] = run_scribe_agent(chunks)
-    return state
+def extract_json_like(text: str) -> Dict:
+    """
+    Extract a simple JSON object from LLM output.
+    This avoids crashing if the model adds extra text.
+    """
+    import json
+
+    clean = text.strip()
+
+    try:
+        return json.loads(clean)
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", clean, re.DOTALL)
+
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            pass
+
+    return {}
 
 
-def run_research(state: AgentState) -> AgentState:
-    """Run the Research Agent on the student question."""
-    state["result"] = run_research_agent(
-        question=state["request"],
-        document_id=state["document_id"]
-    )
-    return state
+def detect_explicit_question_count(request: str) -> Optional[int]:
+    """
+    Detect explicit question count from requests like:
+    - give me 10 questions
+    - create 7 quiz questions
+    """
+    match = re.search(r"\b(\d{1,2})\s+(questions|question|quiz questions)\b", request.lower())
+
+    if not match:
+        return None
+
+    value = int(match.group(1))
+
+    if value < 3:
+        return 3
+
+    if value > 15:
+        return 15
+
+    return value
 
 
-def run_quiz(state: AgentState) -> AgentState:
-    """Fetch chunks and run quiz generation."""
-    chunks = retrieve_similar_chunks(
-        query="key concepts definitions important topics",
-        document_id=state["document_id"],
-        top_k=10
-    )
-    state["result"] = run_quiz_generation(
-        chunks=chunks,
-        student_id=state["student_id"]
-    )
-    return state
+def plan_quiz_request(request: str) -> Dict:
+    """
+    Decide quiz focus, style, length, and retrieval query.
+    Uses a hybrid approach:
+    - rule-based safeguards
+    - LLM planner
+    """
+    explicit_count = detect_explicit_question_count(request)
 
+    fallback_plan = {
+        "quiz_focus": request,
+        "quiz_style": "standard",
+        "num_questions": explicit_count or 5,
+        "retrieval_query": request
+    }
 
-def run_evaluate(state: AgentState) -> AgentState:
-    """Run answer evaluation with fields from extra."""
-    state["result"] = run_answer_evaluation(
-        question=state["extra"].get("question", ""),
-        correct_answer=state["extra"].get("correct_answer", ""),
-        student_answer=state["extra"].get("student_answer", ""),
-        student_id=state["student_id"]
-    )
-    return state
+    try:
+        prompt = QUIZ_PLANNER_PROMPT.format_messages(request=request)
+        response = llm.invoke(prompt)
 
+        plan = extract_json_like(response.content)
 
-def run_explain(state: AgentState) -> AgentState:
-    """Fetch chunks and run concept explanation."""
-    chunks = retrieve_similar_chunks(
-        query=state["request"],
-        document_id=state["document_id"],
-        top_k=5
-    )
-    state["result"] = run_explanation(
-        concept=state["request"],
-        chunks=chunks,
-        student_id=state["student_id"]
-    )
-    return state
+        if not plan:
+            return fallback_plan
 
+        quiz_focus = str(plan.get("quiz_focus") or request).strip()
+        quiz_style = str(plan.get("quiz_style") or "standard").strip()
+        retrieval_query = str(plan.get("retrieval_query") or quiz_focus).strip()
 
-def compile_response(state: AgentState) -> AgentState:
-    """Attach metadata to the final result."""
-    state["result"]["intent"] = state["intent"]
-    state["result"]["student_id"] = state["student_id"]
-    state["result"]["document_id"] = state["document_id"]
-    return state
+        try:
+            num_questions = int(plan.get("num_questions", fallback_plan["num_questions"]))
+        except Exception:
+            num_questions = fallback_plan["num_questions"]
 
+        if explicit_count is not None:
+            num_questions = explicit_count
 
-# --- Build the LangGraph ---
+        if num_questions < 3:
+            num_questions = 3
 
-def build_graph() -> StateGraph:
-    graph = StateGraph(AgentState)
+        if num_questions > 15:
+            num_questions = 15
 
-    # add nodes
-    graph.add_node("classify_intent", classify_intent)
-    graph.add_node("compile_response", compile_response)
-    graph.add_node("SUMMARIZE", run_scribe)
-    graph.add_node("QUESTION", run_research)
-    graph.add_node("QUIZ", run_quiz)
-    graph.add_node("EVALUATE", run_evaluate)
-    graph.add_node("EXPLAIN", run_explain)
-
-    # entry point
-    graph.set_entry_point("classify_intent")
-
-    # conditional routing after classification
-    graph.add_conditional_edges(
-        "classify_intent",
-        route,
-        {
-            "SUMMARIZE": "SUMMARIZE",
-            "QUESTION":  "QUESTION",
-            "QUIZ":      "QUIZ",
-            "EVALUATE":  "EVALUATE",
-            "EXPLAIN":   "EXPLAIN"
+        return {
+            "quiz_focus": quiz_focus,
+            "quiz_style": quiz_style,
+            "num_questions": num_questions,
+            "retrieval_query": retrieval_query
         }
-    )
 
-    # all agent nodes lead to compile_response then END
-    for node in ["SUMMARIZE", "QUESTION", "QUIZ", "EVALUATE", "EXPLAIN"]:
-        graph.add_edge(node, "compile_response")
-
-    graph.add_edge("compile_response", END)
-
-    return graph.compile()
+    except Exception:
+        return fallback_plan
 
 
-# compile once at import time
-orchestrator = build_graph()
-
-
+# -------------------------------------------------------------------
+# Main orchestrator
+# -------------------------------------------------------------------
 def run_orchestrator(
     request: str,
     document_id: int,
     student_id: int,
+    subject_id: int,
     extra: Optional[Dict] = None
 ) -> Dict:
-    # if evaluation fields are present, skip classification
+    """
+    Main orchestrator entry point.
+
+    Routes the request to:
+    - Scribe Agent
+    - Research Agent
+    - Tutor Agent
+
+    subject_id is passed to Tutor so weak topics and quiz results
+    are saved per subject.
+    """
     extra = extra or {}
-    forced_intent = None
+    intent = classify_intent(request, extra)
 
-    if all(k in extra for k in ["question", "correct_answer", "student_answer"]):
-        forced_intent = "EVALUATE"
+    # ------------------------------------------------------------
+    # SUMMARIZE
+    # ------------------------------------------------------------
+    if intent == "SUMMARIZE":
+        chunks = retrieve_similar_chunks(
+            query="lecture summary overview key concepts definitions",
+            document_id=document_id,
+            top_k=10
+        )
 
-    initial_state: AgentState = {
-        "request": request,
-        "intent": forced_intent or "",
-        "document_id": document_id,
-        "student_id": student_id,
-        "extra": extra,
-        "result": {}
-    }
+        result = run_scribe_agent(chunks)
 
-    # if intent is forced, skip the classify_intent node
-    if forced_intent:
-        state = initial_state
-        state = run_evaluate(state)
-        state = compile_response(state)
-        return state["result"]
+    # ------------------------------------------------------------
+    # QUESTION
+    # ------------------------------------------------------------
+    elif intent == "QUESTION":
+        result = run_research_agent(
+            question=request,
+            document_id=document_id
+        )
 
-    final_state = orchestrator.invoke(initial_state)
-    return final_state["result"]
+    # ------------------------------------------------------------
+    # QUIZ — adaptive planning
+    # ------------------------------------------------------------
+    elif intent == "QUIZ":
+        quiz_plan = plan_quiz_request(request)
+
+        chunks = retrieve_similar_chunks(
+            query=quiz_plan["retrieval_query"],
+            document_id=document_id,
+            top_k=12
+        )
+
+        result = run_quiz_generation(
+            chunks=chunks,
+            student_id=student_id,
+            subject_id=subject_id,
+            num_questions=quiz_plan["num_questions"],
+            quiz_focus=quiz_plan["quiz_focus"],
+            quiz_style=quiz_plan["quiz_style"]
+        )
+
+        result["quiz_plan"] = quiz_plan
+
+    # ------------------------------------------------------------
+    # EVALUATE
+    # ------------------------------------------------------------
+    elif intent == "EVALUATE":
+        result = run_answer_evaluation(
+            question=extra.get("question", ""),
+            correct_answer=extra.get("correct_answer", ""),
+            student_answer=extra.get("student_answer", ""),
+            student_id=student_id,
+            subject_id=subject_id
+        )
+
+    # ------------------------------------------------------------
+    # EXPLAIN
+    # ------------------------------------------------------------
+    elif intent == "EXPLAIN":
+        chunks = retrieve_similar_chunks(
+            query=request,
+            document_id=document_id,
+            top_k=5
+        )
+
+        result = run_explanation(
+            concept=request,
+            chunks=chunks,
+            student_id=student_id,
+            subject_id=subject_id
+        )
+
+    # ------------------------------------------------------------
+    # FALLBACK
+    # ------------------------------------------------------------
+    else:
+        result = {
+            "agent": "orchestrator",
+            "answer": "I could not understand your request."
+        }
+
+    result["intent"] = intent
+    result["student_id"] = student_id
+    result["subject_id"] = subject_id
+    result["document_id"] = document_id
+
+    return result
