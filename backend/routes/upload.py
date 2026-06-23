@@ -38,9 +38,9 @@ llm = ChatOllama(
 
 
 DOCUMENT_RELEVANCE_PROMPT = ChatPromptTemplate.from_template("""
-You are a strict academic document relevance checker.
+You are a very strict academic document relevance checker.
 
-A student is working inside this subject:
+A student is working inside the following subject:
 
 SUBJECT NAME:
 {subject_name}
@@ -48,7 +48,7 @@ SUBJECT NAME:
 SUBJECT DESCRIPTION:
 {subject_description}
 
-Existing documents/chunks already accepted in this subject:
+Existing accepted material in this subject:
 {existing_subject_context}
 
 The student uploaded a new document. Here is an excerpt:
@@ -57,23 +57,37 @@ NEW DOCUMENT EXCERPT:
 {new_document_excerpt}
 
 Your task:
-Decide whether the new document belongs to the same academic subject/topic.
+Decide whether the uploaded document should be accepted into this subject.
 
-Rules:
-- Accept if the document clearly belongs to the subject.
-- Accept if it is a subtopic, chapter, prerequisite, or continuation of the subject.
-- Reject if it is about an unrelated academic field.
-- If the subject name is broad and the document reasonably fits, accept.
-- If there are existing documents, the new document should be coherent with them.
-- Do not reject only because the document uses different wording.
-- Be strict for obviously unrelated documents.
-- If uncertain but the document seems academically close to the subject, accept with medium confidence.
+Important principle:
+The document must primarily belong to the selected subject. Do not accept a
+document only because there is a weak, indirect, interdisciplinary, or possible
+connection.
+
+Strict rules:
+- Accept only if the main topic of the uploaded document clearly matches the subject.
+- Accept if it is clearly a chapter, subtopic, prerequisite, or continuation of the subject.
+- Reject if the document mainly belongs to another academic field.
+- Reject if the relation is only indirect, speculative, or based on a broad interpretation.
+- Reject if the document could be discussed philosophically, historically, ethically, or socially, but the document itself is not mainly about that subject.
+- For broad subjects, still be strict: the document must clearly and explicitly fit the subject.
+- If the subject is Philosophy, accept only documents mainly about philosophical topics, such as ethics, logic, metaphysics, epistemology, philosophy of mind, political philosophy, philosophy of science, or philosophy of technology.
+- If the subject is Philosophy and the document is mainly a technical document about machine learning, programming, mathematics, data science, algorithms, or engineering, reject it unless the excerpt explicitly focuses on philosophical analysis, ethics, consciousness, knowledge, or social implications.
+- If existing documents are available, the new document must be coherent with them.
+- If there is no strong evidence that the document belongs to the subject, reject it.
+- If uncertain, reject.
 - If the document is empty or impossible to understand, reject.
+
+Confidence rules:
+- Use confidence above 0.85 only when the document clearly belongs to the subject.
+- Use confidence between 0.50 and 0.85 when there is partial relation but not enough certainty.
+- Use confidence below 0.50 when the document is unrelated or mostly belongs to another field.
+- A document should be marked relevant=true only when confidence is at least 0.85.
 
 Return valid JSON only with this exact structure:
 
 {{
-  "relevant": true,
+  "relevant": false,
   "confidence": 0.0,
   "reason": "short explanation"
 }}
@@ -212,7 +226,19 @@ def validate_document_relevance(
     if confidence > 1:
         confidence = 1.0
 
+    
+
     reason = parsed.get("reason", "No reason provided.")
+
+    if confidence < 0.7:
+        relevant = False
+        reason = (
+        "The document was not accepted because its relation to the selected subject "
+        "is not strong enough. A document must clearly and primarily belong to the "
+        "subject, not only have an indirect or possible connection. "
+        + str(reason)
+        )
+
 
     return {
         "relevant": bool(relevant),

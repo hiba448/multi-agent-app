@@ -601,32 +601,31 @@ for key, value in DEFAULT_STATE.items():
 # -------------------------------------------------------------------
 # Generic API helpers
 # -------------------------------------------------------------------
-def api_get(path: str, timeout: float = 30.0):
+def api_get(path: str, timeout=None):
     response = httpx.get(
         API_URL + path,
-        timeout=httpx.Timeout(timeout, connect=30.0)
+        timeout=None
     )
     return response
 
 
-def api_post(path: str, json=None, data=None, files=None, timeout: float = 60.0):
+def api_post(path: str, json=None, data=None, files=None, timeout=None):
     response = httpx.post(
         API_URL + path,
         json=json,
         data=data,
         files=files,
-        timeout=httpx.Timeout(timeout, connect=30.0)
+        timeout=None
     )
     return response
 
 
-def api_delete(path: str, timeout: float = 30.0):
+def api_delete(path: str, timeout=None):
     response = httpx.delete(
         API_URL + path,
-        timeout=httpx.Timeout(timeout, connect=30.0)
+        timeout=None
     )
     return response
-
 
 # -------------------------------------------------------------------
 # Auth helpers
@@ -831,8 +830,7 @@ def upload_document(file):
             "student_id": str(st.session_state.student_id),
             "subject_id": str(st.session_state.subject_id),
             "session_id": str(st.session_state.session_id)
-        },
-        timeout=300.0
+        }
     )
     return response
 
@@ -847,8 +845,7 @@ def send_chat(request: str, extra: dict = None):
             "subject_id": st.session_state.subject_id,
             "session_id": st.session_state.session_id,
             "extra": extra
-        },
-        timeout=900.0
+        }
     )
     return response
 
@@ -886,8 +883,7 @@ def analyze_full_quiz_attempt(
             "correct_count": correct_count,
             "total_questions": total_questions,
             "answers": answers
-        },
-        timeout=900.0
+        }
     )
     return response
 
