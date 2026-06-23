@@ -3,38 +3,67 @@
 
 > Built at ENSIAS — Mohammed V University, Rabat  
 > Program: Business Intelligence & Analytics (BI&A)  
-> Academic Year: 2025–2026
+> Academic Year: 2025–2026  
+> Supervised by **Pr. BENBRAHIM Houda**
 
 ---
 
 ## Overview
 
-Lecture Companion is an intelligent, fully local study assistant built on a multi-agent architecture. Students upload their lecture materials (PDF or PowerPoint), and the system provides summaries, answers questions, generates quizzes, evaluates answers, and tracks learning progress — all without sending any data to external cloud services.
+Lecture Companion is an intelligent, fully local academic study assistant built on a multi-agent architecture. Students organize their learning by subject, upload lecture materials, and interact with a system that provides summaries, answers questions, generates adaptive quizzes, evaluates answers, detects weak topics, and tracks progress over time — entirely without sending data to external cloud services.
 
-The system is composed of four specialized agents coordinated by an orchestrator:
+---
 
-| Agent | Responsibility |
-|---|---|
-| **Scribe Agent** | Extracts summaries, key concepts, and definitions from lecture content |
-| **Research Agent** | Answers student questions grounded in the uploaded document |
-| **Tutor Agent** | Generates quizzes, evaluates answers, and explains difficult concepts |
-| **Orchestrator Agent** | Classifies intent and routes every request to the correct agent |
+## Architecture
+
+```
+Frontend (Streamlit)
+    ↓ HTTP
+Backend (FastAPI)
+    ↓
+Orchestrator Agent
+    ↓
+Scribe Agent · Research Agent · Tutor Agent
+    ↓
+PostgreSQL + pgvector · Ollama (Local LLM)
+```
 
 ---
 
 ## Technology Stack
 
-| Layer | Tool |
-|---|---|
-| Frontend | Streamlit |
-| Backend | FastAPI |
-| Agents | LangChain + LangGraph |
-| LLM (generation) | Ollama — gemma3:4b |
-| LLM (embeddings) | Ollama — nomic-embed-text |
-| Database | PostgreSQL + pgvector |
-| ORM | SQLAlchemy + Alembic |
-| Document parsing | PyMuPDF + python-pptx |
-| Containerization | Docker + Docker Compose |
+| Layer | Tool | Role |
+|---|---|---|
+| Frontend | Streamlit | User interface |
+| Backend | FastAPI | REST API and request routing |
+| Agent framework | LangChain + LangGraph | Agent logic and orchestration |
+| LLM (generation) | Ollama — gemma3:4b | Text generation and reasoning |
+| LLM (embeddings) | Ollama — nomic-embed-text | Semantic vector embeddings |
+| Database | PostgreSQL + pgvector | Relational data and vector search |
+| ORM | SQLAlchemy + Alembic | Database access and migrations |
+| Document parsing | PyMuPDF + python-pptx | PDF and PowerPoint extraction |
+| Containerization | Docker + Docker Compose | Reproducible deployment |
+
+---
+
+## Data Model
+
+```
+Student
+  ├── Subject (one per academic field, e.g. Machine Learning, Data Warehousing)
+  │     ├── Session / Discussion (one document per discussion)
+  │     │     └── Message (full conversation history)
+  │     ├── Document + DocumentChunks (parsed and embedded)
+  │     ├── WeakTopic (detected per subject, with mastery status)
+  │     ├── QuizResult (one record per completed quiz attempt)
+  │     └── TopicProgress (score history per topic over time)
+```
+
+Key constraints:
+- Subject names are unique per student.
+- Weak topics are unique per student–subject–topic combination.
+- One discussion is linked to exactly one document.
+- Documents are validated against their subject before being accepted.
 
 ---
 
@@ -43,30 +72,33 @@ The system is composed of four specialized agents coordinated by an orchestrator
 ```
 lecture-companion/
 ├── backend/
-│   ├── main.py                  # FastAPI app and router registration
+│   ├── main.py                         # FastAPI app, router registration, CORS
 │   ├── Dockerfile
 │   ├── routes/
-│   │   ├── chat.py              # POST /chat
-│   │   ├── upload.py            # POST /upload
-│   │   ├── session.py           # Session and history routes
-│   │   └── student.py           # Weak topics, quiz results, documents
+│   │   ├── auth.py                     # POST /auth/register, /auth/login
+│   │   ├── subject.py                  # CRUD for subjects
+│   │   ├── session.py                  # Discussion management and history
+│   │   ├── upload.py                   # Document upload + subject validation
+│   │   ├── chat.py                     # POST /chat — main agent entry point
+│   │   └── student.py                  # Weak topics, quiz results, topic progress
 │   └── agents/
-│       ├── orchestrator.py      # LangGraph orchestration logic
-│       ├── scribe.py            # Scribe Agent
-│       ├── research.py          # Research Agent
-│       └── tutor.py             # Tutor Agent
+│       ├── orchestrator.py             # Intent classification, quiz planning, routing
+│       ├── scribe.py                   # Summary, key concepts, definitions
+│       ├── research.py                 # Question answering, off-topic detection
+│       └── tutor.py                    # Quiz generation, evaluation, full quiz analysis
 ├── db/
-│   ├── models.py                # SQLAlchemy models
-│   └── vector_store.py          # Embedding generation and retrieval
+│   ├── models.py                       # All SQLAlchemy models
+│   └── vector_store.py                 # Embedding generation and similarity search
 ├── parsing/
-│   └── document_parser.py       # PDF and PPTX text extraction
+│   └── document_parser.py             # PDF (PyMuPDF) and PPTX (python-pptx) parsing
 ├── frontend/
-│   ├── app.py                   # Streamlit interface
+│   ├── app.py                          # Streamlit interface
 │   └── Dockerfile
-├── alembic/                     # Database migrations
-├── docker-compose.yml
+├── alembic/
+│   └── versions/                       # Database migration history
+├── docker-compose.yaml
 ├── requirements.txt
-├── .env                         # Environment variables (not committed)
+├── .env                                # Environment variables (not committed)
 └── .gitignore
 ```
 
@@ -75,12 +107,12 @@ lecture-companion/
 ## Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) installed and running
-- At least **8 GB of RAM** available for Docker
-- At least **10 GB of free disk space** (for models and database volumes)
+- Minimum **8 GB of RAM** allocated to Docker
+- Minimum **10 GB of free disk space** (models and database volumes)
 
 ---
 
-## Installation and Setup
+## Installation
 
 ### 1. Clone the repository
 
@@ -90,8 +122,6 @@ cd lecture-companion
 ```
 
 ### 2. Create the `.env` file
-
-Create a `.env` file at the root of the project with the following content:
 
 ```env
 # PostgreSQL
@@ -105,11 +135,11 @@ OLLAMA_BASE_URL=http://ollama:11434
 OLLAMA_MODEL=gemma3:4b
 OLLAMA_EMBED_MODEL=nomic-embed-text
 
-# API
+# Frontend
 API_URL=http://backend:8000
 ```
 
-> The `.env` file is listed in `.gitignore` and must never be committed to the repository.
+> `.env` is listed in `.gitignore` and must never be committed.
 
 ### 3. Build and start all containers
 
@@ -117,20 +147,14 @@ API_URL=http://backend:8000
 docker compose up -d --build
 ```
 
-This starts four containers: `lecture_db`, `lecture_ollama`, `lecture_backend`, and `lecture_frontend`.
-
-### 4. Pull the required models
-
-Run the following commands once after the first startup:
+### 4. Pull the required models (first run only)
 
 ```bash
 docker exec lecture_ollama ollama pull gemma3:4b
 docker exec lecture_ollama ollama pull nomic-embed-text
 ```
 
-Model downloads may take several minutes depending on your connection.
-
-### 5. Enable the pgvector extension
+### 5. Enable pgvector (first run only)
 
 ```bash
 docker exec -it lecture_db psql -U admin -d lecture_companion -c "CREATE EXTENSION IF NOT EXISTS vector;"
@@ -144,49 +168,133 @@ docker exec -it lecture_backend alembic upgrade head
 
 ---
 
-## Running the Application
-
-Once setup is complete, the application is accessible at:
+## Access
 
 | Service | URL |
 |---|---|
-| Frontend (Streamlit) | http://localhost:8501 |
+| Frontend | http://localhost:8501 |
 | Backend API | http://localhost:8000 |
-| API Documentation (Swagger) | http://localhost:8000/docs |
+| API Documentation | http://localhost:8000/docs |
 
 ---
 
-## Usage
+## Usage Flow
 
-1. **Login** — Enter your name. Returning users will see their previous sessions.
-2. **Upload** — Upload a lecture PDF or PPTX file. The system parses, chunks, and indexes it automatically.
-3. **Chat** — Interact with your lecture:
-   - *"Give me a summary of the lecture"* → Scribe Agent
-   - *"What is gradient descent?"* → Research Agent
-   - *"Give me a quiz"* → Tutor Agent
-   - *"Explain backpropagation in simple terms"* → Tutor Agent
-4. **Quiz** — Answer generated questions in the Quiz tab. Wrong answers are tracked automatically.
-5. **My Progress** — View detected weak topics and your quiz score history.
+```
+Register / Login
+    → Dashboard: view or create subjects
+        → Enter subject
+            → Create a discussion
+            → Upload a lecture document (validated against the subject)
+            → Chat: ask questions, request summaries, explanations
+            → Generate a quiz (quick / standard / full coverage / exam)
+            → Complete quiz → system analyzes the full attempt
+            → Weak topics detected and saved per subject
+            → Practice weak topics with targeted quizzes
+            → Track progress per topic over time
+```
 
-> The system will decline to answer questions unrelated to the uploaded document and will suggest opening a new session instead.
+---
+
+## Agent Responsibilities
+
+### Orchestrator Agent
+Classifies every student request into one of five intents: `SUMMARIZE`, `QUESTION`, `QUIZ`, `EVALUATE`, `EXPLAIN`. For quiz requests, a dedicated quiz planner determines the focus, style, and number of questions before routing to the Tutor Agent. The EVALUATE intent is forced automatically when quiz answer fields are present in the request payload, bypassing classification.
+
+### Scribe Agent
+Receives the top retrieved chunks from the lecture document and produces a structured output: a concise summary, a list of key concepts, and a dictionary of definitions.
+
+### Research Agent
+Retrieves the most semantically similar chunks from the vector store using cosine distance. Decides whether to answer from lecture content or enrich with web search based on the best chunk distance score. Detects off-topic questions and declines to answer them, directing the student to open a new discussion or subject.
+
+### Tutor Agent
+Handles three tasks: quiz generation (with adaptive focus and style), per-question answer evaluation, and full quiz attempt analysis. The full quiz analysis is the primary mechanism for weak topic detection — it evaluates the entire quiz at once, identifies patterns across correct and incorrect answers, and produces structured weak topics with evidence, recommendations, and mastery status.
 
 ---
 
 ## API Endpoints
 
+### Authentication
 | Method | Route | Description |
 |---|---|---|
-| GET | `/` | Health check |
-| POST | `/session/` | Create or retrieve a student session |
-| GET | `/session/{id}/history` | Get message history for a session |
-| GET | `/session/{id}/document` | Get the document linked to a session |
-| GET | `/session/student/{id}` | Get all sessions for a student |
-| POST | `/session/student/{id}/new` | Create a new session for a student |
-| POST | `/upload/` | Upload and process a lecture file |
-| POST | `/chat/` | Send a message through the orchestrator |
-| GET | `/student/{id}/weak-topics` | Get detected weak topics |
-| GET | `/student/{id}/quiz-results` | Get quiz result history |
-| GET | `/student/{id}/documents` | Get uploaded documents |
+| POST | `/auth/register` | Create a new student account |
+| POST | `/auth/login` | Authenticate with username or email |
+
+### Subjects
+| Method | Route | Description |
+|---|---|---|
+| GET | `/subject/student/{student_id}` | List all subjects for a student |
+| POST | `/subject/` | Create a new subject |
+| GET | `/subject/{subject_id}` | Get one subject |
+| PUT | `/subject/{subject_id}` | Update subject name or description |
+| DELETE | `/subject/{subject_id}` | Delete subject and all related data |
+
+### Discussions (Sessions)
+| Method | Route | Description |
+|---|---|---|
+| POST | `/session/` | Create a new discussion inside a subject |
+| GET | `/session/{session_id}/history` | Get message history |
+| GET | `/session/{session_id}/document` | Get the document linked to a discussion |
+| GET | `/session/subject/{subject_id}` | List all discussions inside a subject |
+| DELETE | `/session/{session_id}` | Delete a discussion and its messages |
+
+### Upload
+| Method | Route | Description |
+|---|---|---|
+| POST | `/upload/` | Upload and validate a document against its subject |
+
+### Chat
+| Method | Route | Description |
+|---|---|---|
+| POST | `/chat/` | Send a request through the orchestrator |
+
+### Student Data
+| Method | Route | Description |
+|---|---|---|
+| GET | `/student/{id}/subject/{sid}/weak-topics` | Weak topics per subject |
+| GET | `/student/{id}/subject/{sid}/quiz-results` | Quiz results per subject |
+| GET | `/student/{id}/subject/{sid}/topic-progress` | Topic progress history |
+| GET | `/student/{id}/subject/{sid}/topic-progress/{topic}` | Progress for one topic |
+| POST | `/student/{id}/subject/{sid}/quiz-attempt/analyze` | Analyze a completed quiz attempt |
+| GET | `/student/{id}/subject/{sid}/documents` | Documents per subject |
+
+---
+
+## Document Validation
+
+When a document is uploaded inside a subject, the system automatically checks its relevance before storing it. The validation process:
+
+1. Extracts a text excerpt from the new document (first 8 chunks, up to 5 000 characters).
+2. Retrieves short excerpts from already accepted documents in the subject for comparison context.
+3. Asks the local LLM to decide whether the new document belongs to the same academic field.
+4. Returns a structured result with a `relevant` boolean, a `confidence` score, and a plain-text reason.
+
+Documents that do not pass validation are rejected with a descriptive error. The file is removed from disk. No database record is created.
+
+---
+
+## Quiz System
+
+Quiz generation is adaptive. When a student requests a quiz, a dedicated planner analyses the request and decides:
+
+- **Quiz focus** — the specific topic or scope.
+- **Quiz style** — `quick` (3 questions), `standard` (5), `long` (8), `full_coverage` (10–12), `exam_preparation` (8–10), or `weak_topics`.
+- **Number of questions** — inferred from the request or overridden by an explicit number (capped at 15).
+- **Retrieval query** — the best semantic query to fetch relevant lecture chunks.
+
+Once the student completes all questions, the full attempt is sent to `POST /student/{id}/subject/{sid}/quiz-attempt/analyze`. The Tutor Agent evaluates the attempt globally, detects weak and strong topics, updates mastery status, and saves a `TopicProgress` record and a final `QuizResult`.
+
+---
+
+## Weak Topic Tracking
+
+Weak topics are detected exclusively through full quiz attempt analysis — not question by question. Each topic carries:
+
+- `evidence` — which questions revealed the gap.
+- `recommendation` — what the student should review.
+- `mastery_status` — one of `needs_practice`, `improving`, or `mastered`.
+
+Topics are scoped per student and per subject. Progress per topic is tracked over time through `TopicProgress` records, allowing the system to measure improvement across multiple quiz attempts.
 
 ---
 
@@ -196,35 +304,40 @@ Once setup is complete, the application is accessible at:
 # Start all services in the background
 docker compose up -d
 
-# View logs for a specific service
+# View live logs for a specific service
 docker compose logs -f backend
 
-# Restart a single service after a code change
+# Restart one service after a code change
 docker compose restart backend
 
 # Stop all services
 docker compose down
 
-# Stop and delete all data (resets database and models)
+# Stop and delete all volumes (resets database and models)
 docker compose down -v
 
 # Rebuild after changing requirements.txt
 docker compose up -d --build
+
+# Apply new migrations
+docker exec -it lecture_backend alembic upgrade head
 ```
+
+> Code changes to Python files are reflected immediately without rebuilding because the project folder is mounted as a volume inside the containers. Rebuilding is only required when `requirements.txt` changes.
 
 ---
 
 ## Development Notes
 
-- Code changes to Python files are reflected immediately without rebuilding, since the project folder is mounted as a volume inside the containers.
-- Rebuilding is only required when `requirements.txt` changes.
-- All work should be done on feature branches merged into `dev`. The `main` branch receives merges only at the end of each phase.
-- Database schema changes must always be accompanied by an Alembic migration:
+- All work should go through feature branches merged into `dev`. The `main` branch receives merges only at the end of each validated phase.
+- Every database schema change must be accompanied by an Alembic migration:
 
 ```bash
 docker exec -it lecture_backend alembic revision --autogenerate -m "description"
 docker exec -it lecture_backend alembic upgrade head
 ```
+
+- The `uploads/` folder is created automatically on startup at `/app/uploads` inside the backend container. Uploaded files are named using the pattern `student_{id}_subject_{id}_session_{id}_{filename}` to avoid collisions.
 
 ---
 
