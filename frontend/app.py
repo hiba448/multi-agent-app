@@ -1,5 +1,8 @@
 import os
 import html
+import base64
+from pathlib import Path
+
 import httpx
 import streamlit as st
 
@@ -416,68 +419,109 @@ def escape_html(value) -> str:
         return ""
     return html.escape(str(value))
 
+def resolve_logo_path():
+    """
+    Find the ENSIAS logo whether Streamlit runs from /app or /app/frontend.
+    """
+    app_dir = Path(__file__).parent
+
+    candidates = [
+        app_dir / ENSIAS_LOGO_PATH,
+        app_dir / "assets" / "ensias_logo.jpg",
+        app_dir / "assets" / "logo.png",
+        Path("frontend") / "assets" / "ensias_logo.jpg",
+        Path("frontend") / "assets" / "logo.png",
+        Path(ENSIAS_LOGO_PATH),
+    ]
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    return None
+
+
+def image_to_base64(path: Path) -> str:
+    """
+    Convert an image file to base64 so it can be embedded in HTML.
+    """
+    suffix = path.suffix.lower()
+
+    if suffix in [".jpg", ".jpeg"]:
+        mime_type = "image/jpeg"
+    elif suffix == ".png":
+        mime_type = "image/png"
+    else:
+        mime_type = "image/png"
+
+    encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def logo_html(size: int = 44) -> str:
+    """
+    Return the ENSIAS logo as HTML.
+    If the image is missing, fallback to the red E mark.
+    """
+    logo_path = resolve_logo_path()
+
+    if logo_path:
+        src = image_to_base64(logo_path)
+        return f"""
+        <img src="{src}"
+             style="width:{size}px;height:{size}px;border-radius:14px;object-fit:cover;
+                    box-shadow:0 10px 24px rgba(200,16,46,0.22);">
+        """
+
+    return f"""
+    <div class="lc-logo-mark" style="width:{size}px;height:{size}px;">
+        E
+    </div>
+    """
 
 def ensias_brand_block(compact: bool = False):
     """
     Visual-only ENSIAS branding block.
-    Does not affect logic.
+    Uses native Streamlit components to avoid raw HTML display.
     """
+    logo_path = resolve_logo_path()
+    logo_width = 64 if compact else 110
     subtitle = "ENSIAS AI Learning Platform" if compact else "ENSIAS - Mohammed V University"
 
-    st.markdown(
-        f"""
-        <div class="lc-brand-row">
-            <div class="lc-logo-mark">E</div>
-            <div>
-                <div class="lc-brand-text">Lecture Companion</div>
-                <div class="lc-brand-subtext">{subtitle}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    col_logo, col_text = st.columns([0.22, 0.78], vertical_alignment="center")
 
+    with col_logo:
+        if logo_path:
+            st.image(str(logo_path), width=logo_width)
+        else:
+            st.markdown("### E")
+
+    with col_text:
+        st.markdown("### Lecture Companion")
+        st.caption(subtitle)
 
 def section_header(title: str, subtitle: str = "", kicker: str = ""):
     """
     Visual-only section heading.
+    Uses native Streamlit rendering to avoid showing raw HTML.
     """
-    kicker_html = f'<div class="lc-section-kicker">{escape_html(kicker)}</div>' if kicker else ""
-    subtitle_html = f'<div class="lc-section-subtitle">{escape_html(subtitle)}</div>' if subtitle else ""
+    if kicker:
+        st.caption(kicker.upper())
 
-    st.markdown(
-        f"""
-        <div class="lc-section-header">
-            {kicker_html}
-            <div class="lc-section-title">{escape_html(title)}</div>
-            {subtitle_html}
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown(f"## {title}")
 
-
+    if subtitle:
+        st.caption(subtitle)
+        
 def hero_block(title: str, subtitle: str):
     """
     Visual-only hero block.
+    Uses native Streamlit components to avoid raw HTML display.
     """
-    st.markdown(
-        f"""
-        <div class="lc-hero">
-            <div class="lc-brand-row">
-                <div class="lc-logo-mark">E</div>
-                <div>
-                    <div class="lc-brand-text">Lecture Companion</div>
-                    <div class="lc-brand-subtext">ENSIAS AI Study Assistant</div>
-                </div>
-            </div>
-            <div class="lc-hero-title">{escape_html(title)}</div>
-            <div class="lc-hero-subtitle">{escape_html(subtitle)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
+    with st.container():
+        ensias_brand_block(compact=False)
+        st.markdown(f"# {title}")
+        st.write(subtitle)
 
 def metric_card(title: str, value: str, caption: str = ""):
     """
